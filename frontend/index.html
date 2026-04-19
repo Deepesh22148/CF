@@ -1,0 +1,65 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>LLM Recommender</title>
+    <!-- Google Fonts -->
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;600;700&display=swap" rel="stylesheet">
+    <!-- FontAwesome for icons -->
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+    <div class="background-shapes">
+        <div class="shape shape-1"></div>
+        <div class="shape shape-2"></div>
+        <div class="shape shape-3"></div>
+    </div>
+
+    <div class="container">
+        <header>
+            <h1><i class="fa-solid fa-brain glow-icon"></i> Neural Recommender</h1>
+            <p>Personalized movie curation powered by Large Language Models</p>
+        </header>
+
+        <div class="main-card glass-panel">
+            <div class="input-section">
+                <label for="userIdInput">Select User Profile (ID 1-943)</label>
+                <div class="input-group">
+                    <input type="number" id="userIdInput" min="1" max="943" value="1" placeholder="User ID">
+                    <button id="recommendBtn" class="btn-primary">
+                        <span>Get Recommendations</span>
+                        <i class="fa-solid fa-wand-magic-sparkles"></i>
+                    </button>
+                </div>
+            </div>
+
+            <div id="loadingState" class="hidden">
+                <div class="loader">
+                    <div class="circle"></div>
+                    <div class="circle"></div>
+                    <div class="circle"></div>
+                </div>
+                <p>Analyzing behavioral patterns & generating recommendations...</p>
+            </div>
+
+            <div id="resultsSection" class="hidden fade-in">
+                <div class="user-context glass-panel-inner">
+                    <h3><i class="fa-solid fa-user-astronaut"></i> Contextual Profile</h3>
+                    <div id="userInfo" class="user-tags">
+                        <!-- Filled by JS -->
+                    </div>
+                </div>
+
+                <h3>Top Matches for You</h3>
+                <div id="movieList" class="movie-grid">
+                    <!-- Filled by JS -->
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script src="script.js"></script>
+</body>
+</html>

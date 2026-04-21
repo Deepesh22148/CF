@@ -2,3 +2,9 @@
 __pycache__/
 *.pyc
 .ipynb_checkpoints/
+
+# Ignored root experiment files
+*.ipynb
+*.csv
+root_python_files_or_datasets/
+

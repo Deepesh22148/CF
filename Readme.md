@@ -56,3 +56,12 @@ bash
 
 ---
 
+
+## Database Function Support
+
+The following database functions are supported:
+
+- **add**: Insert a new record
+- **search**: Retrieve records (with optional filtering)
+- **update**: Modify an existing record (by ID)
+- **delete**: Remove a record (by ID)

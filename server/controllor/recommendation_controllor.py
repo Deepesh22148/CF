@@ -2,16 +2,10 @@ import json
 import os
 import sys
 
-# Add services directory to path
-sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '../services')))
-
-from dotenv import load_dotenv
-load_dotenv(os.path.join(os.path.dirname(__file__), '../.env'))
-
-from data_loader import load_data, get_user_history, get_movie_info, get_user_info
-from prompts import generate_batch_prompt
-from llm_client import get_batch_ratings_from_llm
-from hybrid_recommender import HybridRecommender
+from services.data_loader import load_data, get_user_history, get_movie_info, get_user_info
+from services.prompts import generate_batch_prompt
+from services.llm_client import get_batch_ratings_from_llm
+from services.hybrid_recommender import HybridRecommender
 
 print("Loading data for server...")
 # Retrieve the correct ml-100k data path

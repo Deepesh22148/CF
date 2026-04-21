@@ -1,8 +1,0 @@
-pandas
-openai
-tqdm
-scikit-learn
-google-generativeai
-flask
-flask-cors
-python-dotenv

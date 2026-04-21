@@ -34,7 +34,7 @@ def get_rating_from_llm(prompt):
     """
     prediction = None
     
-    if "OPENAI_API_KEY" in os.environ:
+    if os.environ.get("OPENAI_API_KEY"):
         from openai import OpenAI
         client = OpenAI(api_key=os.environ["OPENAI_API_KEY"])
         try:
@@ -50,8 +50,24 @@ def get_rating_from_llm(prompt):
             prediction = response.choices[0].message.content.strip()
         except Exception as e:
             print(f"OpenAI API Error: {e}")
+
+    elif os.environ.get("GROQ_API_KEY"):
+        from groq import Groq
+        client = Groq(api_key=os.environ["GROQ_API_KEY"])
+        try:
+            response = client.chat.completions.create(
+                model="llama3-8b-8192",
+                messages=[
+                    {"role": "system", "content": "You are a helpful assistant. Output ONLY a single integer."},
+                    {"role": "user", "content": prompt}
+                ],
+                temperature=0.0
+            )
+            prediction = response.choices[0].message.content.strip()
+        except Exception as e:
+            print(f"Groq API Error: {e}")
             
-    elif "GEMINI_API_KEY" in os.environ:
+    elif os.environ.get("GEMINI_API_KEY"):
         import google.generativeai as genai
         genai.configure(api_key=os.environ["GEMINI_API_KEY"])
         try:
@@ -87,7 +103,7 @@ def get_batch_ratings_from_llm(prompt, expected_count):
     """
     prediction = None
     
-    if "OPENAI_API_KEY" in os.environ:
+    if os.environ.get("OPENAI_API_KEY"):
         from openai import OpenAI
         client = OpenAI(api_key=os.environ["OPENAI_API_KEY"])
         try:
@@ -102,8 +118,24 @@ def get_batch_ratings_from_llm(prompt, expected_count):
             prediction = response.choices[0].message.content.strip()
         except Exception as e:
             print(f"OpenAI API Error: {e}")
+
+    elif os.environ.get("GROQ_API_KEY"):
+        from groq import Groq
+        client = Groq(api_key=os.environ["GROQ_API_KEY"])
+        try:
+            response = client.chat.completions.create(
+                model="llama-3.1-8b-instant",
+                messages=[
+                    {"role": "system", "content": "You are a helpful assistant."},
+                    {"role": "user", "content": prompt}
+                ],
+                temperature=0.0
+            )
+            prediction = response.choices[0].message.content.strip()
+        except Exception as e:
+            print(f"Groq API Error: {e}")
             
-    elif "GEMINI_API_KEY" in os.environ:
+    elif os.environ.get("GEMINI_API_KEY"):
         import google.generativeai as genai
         genai.configure(api_key=os.environ["GEMINI_API_KEY"])
         try:
@@ -142,6 +174,25 @@ async def get_batch_ratings_from_llm_async(prompt, expected_count):
             prediction = response.choices[0].message.content.strip()
         except Exception as e:
             print(f"OpenAI Async API Error: {e}")
+
+    elif os.environ.get("GROQ_API_KEY"):
+        from openai import AsyncOpenAI
+        client = AsyncOpenAI(
+            api_key=os.environ["GROQ_API_KEY"],
+            base_url="https://api.groq.com/openai/v1"
+        )
+        try:
+            response = await client.chat.completions.create(
+                model="llama3-8b-8192",
+                messages=[
+                    {"role": "system", "content": "You are a helpful assistant."},
+                    {"role": "user", "content": prompt}
+                ],
+                temperature=0.0
+            )
+            prediction = response.choices[0].message.content.strip()
+        except Exception as e:
+            print(f"Groq API Error: {e}")
             
     elif "GEMINI_API_KEY" in os.environ:
         import google.generativeai as genai

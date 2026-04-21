@@ -13,12 +13,21 @@ interface Recommendation {
   title: string
   genres: string
   score: number
+  estimated_rating: number
+  reason: string
+  summary: string
 }
 
 interface RecommendResponse {
   user_info: UserInfo
   recommendations: Recommendation[]
   rate_limited: boolean
+  cluster?: {
+    cluster_id: number
+    profile?: {
+      dominant_genres?: string[]
+    }
+  }
 }
 
 const DatasetModePage = () => {
@@ -156,6 +165,12 @@ const DatasetModePage = () => {
                     </span>
                   ))}
                 </div>
+
+                {results.cluster?.profile?.dominant_genres && (
+                  <div className="mt-3 text-xs text-slate-300">
+                    Cluster taste: {results.cluster.profile.dominant_genres.join(", ")}
+                  </div>
+                )}
               </div>
 
               {/* Movies */}
@@ -175,6 +190,18 @@ const DatasetModePage = () => {
                     <div className="mt-3 text-green-400 bg-green-500/10 px-3 py-1 rounded-lg text-sm inline-block">
                       🔥 {rec.score}%
                     </div>
+
+                    <div className="mt-2 text-xs text-slate-300">
+                      Pred. Rating: {rec.estimated_rating}/5
+                    </div>
+
+                    <p className="mt-3 text-sm text-slate-200">
+                      {rec.reason}
+                    </p>
+
+                    <p className="mt-2 text-xs text-slate-400">
+                      {rec.summary}
+                    </p>
                   </div>
                 ))}
               </div>

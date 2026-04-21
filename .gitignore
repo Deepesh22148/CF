@@ -2,6 +2,7 @@
 /server/env
 /server/*/__pycache__
 /server/.env*
+!/server/.env.example
 
 /client/AGENTS.md
 /client/CLAUDE.md
@@ -14,6 +15,7 @@
 
 /client/*.tsbuildinfo
 /client/.env*
+!/client/.env.example
 cmd.txt
 proj/
 /server/tests/*/__pycache__

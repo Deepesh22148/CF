@@ -2,7 +2,8 @@ import { NextResponse, NextRequest } from "next/server";
 
 export async function GET(request: NextRequest) {
   try {
-    const BASE_URL = process.env.FASTAPI_URL + "/health";
+    const fastApiUrl = process.env.FASTAPI_URL || "http://127.0.0.1:8000";
+    const BASE_URL = `${fastApiUrl}/health`;
     const response = await fetch(BASE_URL, {
       method: "GET",
     });
@@ -21,9 +22,12 @@ export async function GET(request: NextRequest) {
     }
   } catch (error) {
     console.error(error);
-    return NextResponse.json({
-      status: 500,
-      message: "something went wrong while fetching the user details!",
-    });
+    return NextResponse.json(
+      {
+        status: 500,
+        message: "Failed to reach backend health endpoint",
+      },
+      { status: 500 },
+    );
   }
 }

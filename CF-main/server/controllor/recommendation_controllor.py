@@ -2,8 +2,8 @@ import json
 import os
 import sys
 
-# Add parent CF_Project directory to path to reuse the ML files from the original project
-sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '../../..')))
+# Add services directory to path
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '../services')))
 
 from dotenv import load_dotenv
 load_dotenv(os.path.join(os.path.dirname(__file__), '../.env'))
@@ -15,7 +15,7 @@ from hybrid_recommender import HybridRecommender
 
 print("Loading data for server...")
 # Retrieve the correct ml-100k data path
-data_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), '../../..', 'ml-100k'))
+data_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), '../ml-100k'))
 items, users, train_ratings, test_ratings = load_data(data_dir)
 
 print("Init SVD Hybrid Recommender for serving...")

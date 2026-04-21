@@ -39,7 +39,7 @@ export default function HomePage() {
 
           <div
             onClick={() => {
-                router.push("/personal")
+                router.push("/personal/auth")
             }}
             className={`cursor-pointer px-10 py-6 rounded-xl text-xl font-semibold transition-all duration-30`}
           >

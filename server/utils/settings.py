@@ -5,4 +5,6 @@ class Settings(BaseSettings):
     GEMINI_API_KEY :str
     OPENAI_API_KEY : str
     GROQ_API_KEY : str
+    
+settings = Settings()
    

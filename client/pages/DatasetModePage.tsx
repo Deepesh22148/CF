@@ -1,5 +1,28 @@
 'use client'
 import React, { useState, KeyboardEvent } from "react"
+import MovieAutocompleteChips from "../components/ui/movie-autocomplete-chips"
+import GenreChipInput from "../components/ui/genre-chip-input"
+
+const allGenres = [
+  "action",
+  "adventure",
+  "animation",
+  "children",
+  "comedy",
+  "crime",
+  "documentary",
+  "drama",
+  "fantasy",
+  "film_noir",
+  "horror",
+  "musical",
+  "mystery",
+  "romance",
+  "sci_fi",
+  "thriller",
+  "war",
+  "western",
+]
 
 interface UserInfo {
   age: number
@@ -22,6 +45,8 @@ interface RecommendResponse {
   user_info: UserInfo
   recommendations: Recommendation[]
   rate_limited: boolean
+  system_notes?: string[]
+  search_analysis?: string
   cluster?: {
     cluster_id: number
     profile?: {
@@ -32,6 +57,9 @@ interface RecommendResponse {
 
 const DatasetModePage = () => {
   const [userId, setUserId] = useState<string>("1")
+  const [sessionGenres, setSessionGenres] = useState<string[]>([])
+  const [similarMovies, setSimilarMovies] = useState<string[]>([])
+  const [dislikedMovies, setDislikedMovies] = useState<string[]>([])
   const [loading, setLoading] = useState(false)
   const [results, setResults] = useState<RecommendResponse | null>(null)
   const [error, setError] = useState<string | null>(null)
@@ -51,13 +79,19 @@ const DatasetModePage = () => {
       const res = await fetch("/api/recommend", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ mode: "dataset", user_id: id }),
+        body: JSON.stringify({
+          mode: "dataset",
+          user_id: id,
+          session_genres: sessionGenres,
+          similar_movies: similarMovies,
+          disliked_movies: dislikedMovies,
+        }),
       })
 
-      if (!res.ok) throw new Error("Failed to fetch")
+      const payload = await res.json()
+      if (!res.ok) throw new Error(payload?.error || payload?.detail || "Failed to fetch")
 
-      const data: RecommendResponse = await res.json()
-      setResults(data)
+      setResults(payload as RecommendResponse)
     } catch (err: any) {
       setError(err.message)
     } finally {
@@ -118,6 +152,28 @@ const DatasetModePage = () => {
                 Get Recommendations ✨
               </button>
             </div>
+
+            <div className="grid sm:grid-cols-3 gap-3 mt-4">
+              <GenreChipInput
+                label="Genres (optional)"
+                placeholder="Search and add genres"
+                selectedGenres={sessionGenres}
+                availableGenres={allGenres}
+                onChange={setSessionGenres}
+              />
+              <MovieAutocompleteChips
+                label="Liked Movies (optional)"
+                placeholder="Search and add liked movies"
+                selectedMovies={similarMovies}
+                onChange={setSimilarMovies}
+              />
+              <MovieAutocompleteChips
+                label="Disliked Movies (optional)"
+                placeholder="Search and add disliked movies"
+                selectedMovies={dislikedMovies}
+                onChange={setDislikedMovies}
+              />
+            </div>
           </div>
 
           {/* Error */}
@@ -175,6 +231,18 @@ const DatasetModePage = () => {
 
               {/* Movies */}
               <h3 className="font-semibold mb-4">Top Matches</h3>
+
+              {results.search_analysis && (
+                <div className="mb-4 text-sm text-sky-200 bg-sky-500/10 border border-sky-400/20 rounded-lg px-3 py-2">
+                  Search analysis: {results.search_analysis}
+                </div>
+              )}
+
+              {results.system_notes && results.system_notes.length > 0 && (
+                <div className="mb-4 text-sm text-yellow-200 bg-yellow-500/10 border border-yellow-400/20 rounded-lg px-3 py-2">
+                  Notes: {results.system_notes.join(" | ")}
+                </div>
+              )}
 
               <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-6">
                 {results.recommendations.map((rec) => (

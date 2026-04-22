@@ -81,6 +81,9 @@ class MovieLensRecommender:
         self.user_disliked_samples: Dict[int, List[str]] = {}
         self.user_genre_weights: Dict[int, Dict[str, float]] = {}
         self.movie_popularity: Dict[int, float] = {}
+        self.title_to_movie_ids: Dict[str, List[int]] = {}
+        self.movie_titles: List[str] = []
+        self.movie_id_to_title: Dict[int, str] = {}
 
     def initialize(self) -> None:
         if self.initialized:
@@ -123,6 +126,19 @@ class MovieLensRecommender:
             encoding="latin-1",
         )
         items["movie_id"] = items["movie_id"].astype(int)
+        self.title_to_movie_ids = {}
+        self.movie_titles = []
+        self.movie_id_to_title = {}
+        seen_titles = set()
+        for row in items[["movie_id", "title"]].itertuples(index=False):
+            title = str(row.title).strip()
+            movie_id = int(row.movie_id)
+            normalized = title.lower()
+            self.title_to_movie_ids.setdefault(normalized, []).append(movie_id)
+            self.movie_id_to_title[movie_id] = title
+            if normalized not in seen_titles:
+                self.movie_titles.append(title)
+                seen_titles.add(normalized)
         return items
 
     def _load_ratings(self, filename: str) -> pd.DataFrame:
@@ -367,6 +383,102 @@ class MovieLensRecommender:
         genres = [g.replace("_", " ").title() for g in GENRE_NAMES if int(movie_row.get(g, 0)) == 1]
         return ", ".join(genres) if genres else "Unknown"
 
+    def suggest_movie_titles(self, query: str, limit: int = 8) -> List[str]:
+        self.initialize()
+        text = str(query or "").strip().lower()
+        if not text:
+            return []
+
+        capped_limit = max(1, min(int(limit), 25))
+        prefix_matches = [title for title in self.movie_titles if title.lower().startswith(text)]
+        if len(prefix_matches) >= capped_limit:
+            return prefix_matches[:capped_limit]
+
+        contains_matches = [
+            title for title in self.movie_titles if text in title.lower() and not title.lower().startswith(text)
+        ]
+        return (prefix_matches + contains_matches)[:capped_limit]
+
+    def _titles_from_movie_ids(self, movie_ids: Sequence[int], limit: int = 6) -> List[str]:
+        titles = [self.movie_id_to_title.get(int(mid), str(mid)) for mid in movie_ids]
+        if len(titles) > limit:
+            return titles[:limit]
+        return titles
+
+    def _validate_movie_names(self, movie_list: List[str]) -> Tuple[List[int], List[str]]:
+        if not movie_list:
+            return [], []
+
+        valid_movie_ids: List[int] = []
+        invalid_movies: List[str] = []
+
+        for raw_title in movie_list:
+            title = str(raw_title or "").strip()
+            if not title:
+                continue
+            normalized = title.lower()
+
+            if normalized in self.title_to_movie_ids:
+                valid_movie_ids.extend(self.title_to_movie_ids[normalized])
+                continue
+
+            # Soft fallback: prefix-style match for partial user entries.
+            matched = [
+                mid
+                for t, mids in self.title_to_movie_ids.items()
+                if t.startswith(normalized)
+                for mid in mids
+            ]
+            if matched:
+                valid_movie_ids.append(int(matched[0]))
+            else:
+                invalid_movies.append(title)
+
+        # Keep deterministic unique order.
+        seen = set()
+        deduped = []
+        for mid in valid_movie_ids:
+            if mid in seen:
+                continue
+            seen.add(mid)
+            deduped.append(mid)
+        return deduped, invalid_movies
+
+    def _genres_for_movie_ids(self, movie_ids: Sequence[int]) -> List[str]:
+        if not movie_ids:
+            return []
+        subset = self.items_df[self.items_df["movie_id"].isin(list(movie_ids))]
+        genres: List[str] = []
+        for row in subset.itertuples(index=False):
+            row_dict = row._asdict()
+            for g in GENRE_NAMES:
+                if int(row_dict.get(g, 0)) == 1:
+                    genres.append(g)
+        return genres
+
+    def _check_session_contradictions(
+        self,
+        preferred_genres: Sequence[str],
+        disliked_movie_ids: Sequence[int],
+    ) -> Optional[str]:
+        pref = {str(g).strip().lower().replace("-", "_") for g in preferred_genres if g}
+        if not pref or not disliked_movie_ids:
+            return None
+
+        disliked_genres = self._genres_for_movie_ids(disliked_movie_ids)
+        counts: Dict[str, int] = {}
+        for g in disliked_genres:
+            counts[g] = counts.get(g, 0) + 1
+
+        contradictory = [g for g in pref if counts.get(g, 0) >= 2]
+        if contradictory:
+            return (
+                "Contradiction detected: preferred genre(s) "
+                + ", ".join(sorted(contradictory))
+                + " appear in 2+ disliked movies."
+            )
+        return None
+
     def _extract_json_object(self, text: str) -> Dict[str, Any]:
         text = text.strip()
         try:
@@ -456,6 +568,7 @@ class MovieLensRecommender:
         user_profile: Dict[str, Any],
         cluster_profile: Dict[str, Any],
         candidates: List[Dict[str, Any]],
+        session_intent: Dict[str, Any],
     ) -> Dict[str, Any]:
         seen_ids = set(user_profile.get("seen_movie_ids", []))
         cluster_peer_unseen = [
@@ -483,8 +596,10 @@ class MovieLensRecommender:
                 "top_movies": [m["title"] for m in cluster_profile.get("top_movies", [])[:5]],
                 "peer_unseen_movies": cluster_peer_unseen,
             },
+            "session_intent": session_intent,
             "movies": payload_candidates,
             "response_schema": {
+                "search_profile_summary": "string",
                 "results": [
                     {
                         "movie_id": "int",
@@ -569,10 +684,11 @@ class MovieLensRecommender:
         candidates: List[Dict[str, Any]],
         content: str,
         provider: str,
-    ) -> List[Dict[str, Any]]:
+    ) -> Tuple[List[Dict[str, Any]], str]:
         self._debug_llm_output(provider, content)
         parsed = self._extract_json_object(content)
         results = parsed.get("results", [])
+        search_profile_summary = str(parsed.get("search_profile_summary", "Personalized ranking based on current search intent."))
         result_map = {int(x["movie_id"]): x for x in results if "movie_id" in x}
 
         reranked = []
@@ -615,7 +731,7 @@ class MovieLensRecommender:
             )
 
         reranked.sort(key=lambda x: x["score"], reverse=True)
-        return reranked
+        return reranked, search_profile_summary
 
     def _call_openai_llm(self, prompt: Dict[str, Any]) -> str:
         api_key = os.getenv("OPENAI_API_KEY")
@@ -822,11 +938,12 @@ class MovieLensRecommender:
         user_profile: Dict[str, Any],
         cluster_profile: Dict[str, Any],
         candidates: List[Dict[str, Any]],
-    ) -> Tuple[List[Dict[str, Any]], bool, str]:
+        session_intent: Dict[str, Any],
+    ) -> Tuple[List[Dict[str, Any]], bool, str, str]:
         if httpx is None:
             raise RuntimeError("httpx dependency is required for LLM scoring.")
 
-        prompt = self._build_llm_prompt(user_profile, cluster_profile, candidates)
+        prompt = self._build_llm_prompt(user_profile, cluster_profile, candidates, session_intent)
         configured_provider = os.getenv("LLM_PROVIDER", "auto").strip().lower()
 
         providers_in_order: List[str]
@@ -849,8 +966,8 @@ class MovieLensRecommender:
                     errors.append(f"Unsupported provider: {provider}")
                     continue
 
-                reranked = self._parse_llm_results(candidates, content, provider)
-                return reranked, True, provider
+                reranked, search_profile_summary = self._parse_llm_results(candidates, content, provider)
+                return reranked, True, provider, search_profile_summary
             except Exception as exc:
                 errors.append(f"{provider}: {str(exc)}")
 
@@ -889,13 +1006,29 @@ class MovieLensRecommender:
         user_profile: Dict[str, Any],
         cluster_id: int,
         use_llm: bool,
+        similar_movie_ids: Sequence[int],
+        disliked_movie_ids: Sequence[int],
+        session_intent: Dict[str, Any],
     ) -> Dict[str, Any]:
         raw_scores = self.item_vectors.dot(user_vector)
+
+        # If similar-movies are supplied, blend with their latent neighborhood signal.
+        if similar_movie_ids:
+            valid_similar = [mid for mid in similar_movie_ids if mid in self.movie_id_to_idx]
+            if valid_similar:
+                similar_vecs = [self.item_vectors[self.movie_id_to_idx[mid]] for mid in valid_similar]
+                anchor = np.mean(np.array(similar_vecs), axis=0)
+                sim_scores = self.item_vectors.dot(anchor)
+                raw_scores = 0.75 * raw_scores + 0.25 * sim_scores
+
+        disliked_set = set(disliked_movie_ids)
         candidates = []
 
         for idx in np.argsort(raw_scores)[::-1]:
             movie_id = self.idx_to_movie_id[idx]
             if exclude_movie_ids and movie_id in exclude_movie_ids:
+                continue
+            if movie_id in disliked_set:
                 continue
 
             movie_row = self.items_df[self.items_df["movie_id"] == movie_id].iloc[0]
@@ -931,13 +1064,19 @@ class MovieLensRecommender:
         if use_llm:
             llm_candidate_cap = max(top_k + 5, 20)
             llm_candidates = candidates[:llm_candidate_cap]
-            reranked, used_llm, llm_provider = self._llm_rerank_candidates(user_profile, cluster_profile, llm_candidates)
+            reranked, used_llm, llm_provider, search_profile_summary = self._llm_rerank_candidates(
+                user_profile,
+                cluster_profile,
+                llm_candidates,
+                session_intent,
+            )
         else:
             if self.config.require_llm:
                 raise RuntimeError("LLM is mandatory in this configuration. Set use_llm=True.")
             reranked = self._fallback_reasoning(candidates, user_profile)
             used_llm = False
             llm_provider = "none"
+            search_profile_summary = "Ranking generated from collaborative signals and explicit session filters."
 
         recommendations = [
             {
@@ -962,9 +1101,18 @@ class MovieLensRecommender:
             },
             "llm_used": used_llm,
             "llm_provider": llm_provider,
+            "search_analysis": search_profile_summary,
         }
 
-    def recommend_existing_user(self, user_id: int, top_k: int = 15, use_llm: bool = True) -> Dict[str, Any]:
+    def recommend_existing_user(
+        self,
+        user_id: int,
+        top_k: int = 15,
+        use_llm: bool = True,
+        session_genres: Optional[Sequence[str]] = None,
+        similar_movies: Optional[Sequence[str]] = None,
+        disliked_movies: Optional[Sequence[str]] = None,
+    ) -> Dict[str, Any]:
         self.initialize()
         if user_id not in self.user_id_to_idx:
             raise ValueError(f"User {user_id} not found in dataset")
@@ -976,25 +1124,70 @@ class MovieLensRecommender:
         )[:3]
         preferred_genre_names = [g for g, _ in preferred_genres]
 
+        input_session_genres = [str(g).strip().lower().replace("-", "_") for g in (session_genres or []) if g]
+        effective_genres = input_session_genres if input_session_genres else preferred_genre_names
+
+        similar_movie_ids, invalid_similar = self._validate_movie_names(list(similar_movies or []))
+        disliked_movie_ids, invalid_disliked = self._validate_movie_names(list(disliked_movies or []))
+
+        system_notes: List[str] = []
+        overlap_ids = sorted(set(similar_movie_ids).intersection(set(disliked_movie_ids)))
+        if overlap_ids:
+            similar_movie_ids = [mid for mid in similar_movie_ids if mid not in set(overlap_ids)]
+            overlap_titles = self._titles_from_movie_ids(overlap_ids)
+            system_notes.append(
+                "Movies in both liked and disliked were treated as disliked: " + ", ".join(overlap_titles)
+            )
+
+        if similar_movie_ids:
+            system_notes.append(
+                "Using liked movie anchors: " + ", ".join(self._titles_from_movie_ids(similar_movie_ids))
+            )
+        if disliked_movie_ids:
+            system_notes.append(
+                "Excluding disliked movies: " + ", ".join(self._titles_from_movie_ids(disliked_movie_ids))
+            )
+
+        contradiction = self._check_session_contradictions(effective_genres, disliked_movie_ids)
+        if contradiction:
+            raise ValueError(contradiction)
+
         user_profile = {
             "user_id": int(user_id),
             "age": int(user_row["age"]),
             "gender": str(user_row["gender"]),
             "occupation": str(user_row["occupation"]),
-            "genres": preferred_genre_names,
+            "genres": effective_genres,
             "liked_samples": self.user_liked_samples.get(user_id, []),
             "disliked_samples": self.user_disliked_samples.get(user_id, []),
             "seen_movie_ids": sorted(list(self.seen_movies_by_user.get(user_id, set()))),
         }
 
+        if invalid_similar:
+            system_notes.append("Ignored unknown liked movie names: " + ", ".join(invalid_similar))
+        if invalid_disliked:
+            system_notes.append("Ignored unknown disliked movie names: " + ", ".join(invalid_disliked))
+
+        session_intent = {
+            "session_genres": effective_genres,
+            "similar_movies_input": list(similar_movies or []),
+            "similar_movies_valid_ids": similar_movie_ids,
+            "disliked_movies_input": list(disliked_movies or []),
+            "disliked_movies_valid_ids": disliked_movie_ids,
+            "notes": system_notes,
+        }
+
         rec_payload = self._recommend_from_vector(
             user_vector=self.user_vectors[self.user_id_to_idx[user_id]],
-            preferred_genres=preferred_genre_names,
+            preferred_genres=effective_genres,
             exclude_movie_ids=self.seen_movies_by_user.get(user_id, set()),
             top_k=top_k,
             user_profile=user_profile,
             cluster_id=cluster_id,
             use_llm=use_llm,
+            similar_movie_ids=similar_movie_ids,
+            disliked_movie_ids=disliked_movie_ids,
+            session_intent=session_intent,
         )
 
         public_user_info = dict(user_profile)
@@ -1002,6 +1195,7 @@ class MovieLensRecommender:
 
         return {
             "user_info": public_user_info,
+            "system_notes": system_notes,
             **rec_payload,
         }
 
@@ -1013,31 +1207,78 @@ class MovieLensRecommender:
         genres: Sequence[str],
         top_k: int = 15,
         use_llm: bool = True,
+        similar_movies: Optional[Sequence[str]] = None,
+        disliked_movies: Optional[Sequence[str]] = None,
     ) -> Dict[str, Any]:
         self.initialize()
-        cluster_id = self._predict_cluster_for_profile(age, gender, occupation, genres)
+        effective_genres = [str(g).strip().lower().replace("-", "_") for g in genres if g]
+        cluster_id = self._predict_cluster_for_profile(age, gender, occupation, effective_genres)
         centroid = self.kmeans.cluster_centers_[cluster_id] if self.kmeans is not None else np.zeros(self.item_vectors.shape[1])
+
+        similar_movie_ids, invalid_similar = self._validate_movie_names(list(similar_movies or []))
+        disliked_movie_ids, invalid_disliked = self._validate_movie_names(list(disliked_movies or []))
+
+        system_notes: List[str] = []
+        overlap_ids = sorted(set(similar_movie_ids).intersection(set(disliked_movie_ids)))
+        if overlap_ids:
+            similar_movie_ids = [mid for mid in similar_movie_ids if mid not in set(overlap_ids)]
+            overlap_titles = self._titles_from_movie_ids(overlap_ids)
+            system_notes.append(
+                "Movies in both liked and disliked were treated as disliked: " + ", ".join(overlap_titles)
+            )
+
+        if similar_movie_ids:
+            system_notes.append(
+                "Using liked movie anchors: " + ", ".join(self._titles_from_movie_ids(similar_movie_ids))
+            )
+        if disliked_movie_ids:
+            system_notes.append(
+                "Excluding disliked movies: " + ", ".join(self._titles_from_movie_ids(disliked_movie_ids))
+            )
+
+        contradiction = self._check_session_contradictions(effective_genres, disliked_movie_ids)
+        if contradiction:
+            raise ValueError(contradiction)
 
         user_profile = {
             "age": int(age),
             "gender": str(gender),
             "occupation": str(occupation),
-            "genres": list(genres),
+            "genres": list(effective_genres),
             "liked_samples": [],
+            "disliked_samples": [],
+        }
+
+        if invalid_similar:
+            system_notes.append("Ignored unknown liked movie names: " + ", ".join(invalid_similar))
+        if invalid_disliked:
+            system_notes.append("Ignored unknown disliked movie names: " + ", ".join(invalid_disliked))
+
+        session_intent = {
+            "session_genres": effective_genres,
+            "similar_movies_input": list(similar_movies or []),
+            "similar_movies_valid_ids": similar_movie_ids,
+            "disliked_movies_input": list(disliked_movies or []),
+            "disliked_movies_valid_ids": disliked_movie_ids,
+            "notes": system_notes,
         }
 
         rec_payload = self._recommend_from_vector(
             user_vector=centroid,
-            preferred_genres=genres,
+            preferred_genres=effective_genres,
             exclude_movie_ids=None,
             top_k=top_k,
             user_profile=user_profile,
             cluster_id=cluster_id,
             use_llm=use_llm,
+            similar_movie_ids=similar_movie_ids,
+            disliked_movie_ids=disliked_movie_ids,
+            session_intent=session_intent,
         )
 
         return {
             "user_info": user_profile,
+            "system_notes": system_notes,
             **rec_payload,
         }
 

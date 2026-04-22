@@ -24,3 +24,8 @@ async def get_recommendation_eval(split: str = "u1", ks: str = "5,10,15"):
         "ks": parsed_ks,
     })
     return await recommendation_controllor.get_recommendation(body_as_str)
+
+
+@recommendation_router.get("/movie-suggestions")
+async def get_movie_suggestions(query: str, limit: int = 8):
+    return await recommendation_controllor.get_movie_suggestions(query=query, limit=limit)

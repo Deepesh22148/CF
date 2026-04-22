@@ -22,16 +22,25 @@ async def get_recommendation(body : str):
 async def get_recommendation_dataset_mode(recommender, payload):
     user_id = payload.get("user_id")
     top_k = int(payload.get("top_k", 15))
+    session_genres = payload.get("session_genres", [])
+    similar_movies = payload.get("similar_movies", [])
+    disliked_movies = payload.get("disliked_movies", [])
 
     if user_id is None:
         raise HTTPException(status_code=400, detail="user_id is required for dataset mode")
 
     try:
-        result = recommender.recommend_existing_user(int(user_id), top_k=top_k)
+        result = recommender.recommend_existing_user(
+            int(user_id),
+            top_k=top_k,
+            session_genres=session_genres,
+            similar_movies=similar_movies,
+            disliked_movies=disliked_movies,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     except RuntimeError as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
-    except ValueError as exc:
-        raise HTTPException(status_code=404, detail=str(exc)) from exc
 
     result["rate_limited"] = not bool(result.get("llm_used", False))
     return result
@@ -41,6 +50,8 @@ async def get_recommendation_personal_mode(recommender, payload):
     gender = payload.get("gender")
     occupation = payload.get("occupation")
     genres = payload.get("genres", [])
+    similar_movies = payload.get("similar_movies", [])
+    disliked_movies = payload.get("disliked_movies", [])
     top_k = int(payload.get("top_k", 15))
 
     if age is None or not gender or not occupation:
@@ -53,7 +64,11 @@ async def get_recommendation_personal_mode(recommender, payload):
             occupation=str(occupation),
             genres=list(genres),
             top_k=top_k,
+            similar_movies=similar_movies,
+            disliked_movies=disliked_movies,
         )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     except RuntimeError as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
     result["rate_limited"] = not bool(result.get("llm_used", False))
@@ -72,3 +87,15 @@ async def get_evaluation_metrics(recommender, payload):
         return recommender.evaluate_binary_metrics(split_name=split, ks=ks, use_llm=use_llm)
     except RuntimeError as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+
+async def get_movie_suggestions(query: str, limit: int = 8):
+    recommender = get_recommender()
+    try:
+        suggestions = recommender.suggest_movie_titles(query=query, limit=limit)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return {
+        "query": query,
+        "suggestions": suggestions,
+    }

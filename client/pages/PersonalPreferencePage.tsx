@@ -1,5 +1,7 @@
 'use client'
 import React, { useMemo, useState } from "react"
+import MovieAutocompleteChips from "../components/ui/movie-autocomplete-chips"
+import GenreChipInput from "../components/ui/genre-chip-input"
 
 interface Recommendation {
   movie_id: number
@@ -20,6 +22,8 @@ interface PersonalResponse {
   }
   recommendations: Recommendation[]
   rate_limited: boolean
+  system_notes?: string[]
+  search_analysis?: string
   cluster?: {
     cluster_id: number
     profile?: {
@@ -54,7 +58,9 @@ const PersonalPreferencePage = () => {
   const [age, setAge] = useState<string>("25")
   const [gender, setGender] = useState<string>("M")
   const [occupation, setOccupation] = useState<string>("student")
-  const [genresInput, setGenresInput] = useState<string>("drama, comedy")
+  const [genresInput, setGenresInput] = useState<string[]>(["drama", "comedy"])
+  const [similarMovies, setSimilarMovies] = useState<string[]>([])
+  const [dislikedMovies, setDislikedMovies] = useState<string[]>([])
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [results, setResults] = useState<PersonalResponse | null>(null)
@@ -67,11 +73,6 @@ const PersonalPreferencePage = () => {
       setError("Please enter a valid age")
       return
     }
-
-    const genres = genresInput
-      .split(",")
-      .map((g) => g.trim().toLowerCase())
-      .filter(Boolean)
 
     setError(null)
     setLoading(true)
@@ -86,7 +87,9 @@ const PersonalPreferencePage = () => {
           age: ageValue,
           gender,
           occupation,
-          genres,
+          genres: genresInput,
+          similar_movies: similarMovies,
+          disliked_movies: dislikedMovies,
           top_k: 15,
         }),
       })
@@ -148,15 +151,27 @@ const PersonalPreferencePage = () => {
             />
           </div>
 
-          <div>
-            <label className="block text-sm mb-2">Preferred Genres (comma-separated)</label>
-            <input
-              value={genresInput}
-              onChange={(e) => setGenresInput(e.target.value)}
-              placeholder="drama, thriller"
-              className="w-full rounded-lg bg-slate-800 px-3 py-2"
-            />
-          </div>
+          <GenreChipInput
+            label="Preferred Genres"
+            placeholder="Search and add genres"
+            selectedGenres={genresInput}
+            availableGenres={allGenres}
+            onChange={setGenresInput}
+          />
+
+          <MovieAutocompleteChips
+            label="Liked Movies (optional)"
+            placeholder="Search and add liked movies"
+            selectedMovies={similarMovies}
+            onChange={setSimilarMovies}
+          />
+
+          <MovieAutocompleteChips
+            label="Disliked Movies (optional)"
+            placeholder="Search and add disliked movies"
+            selectedMovies={dislikedMovies}
+            onChange={setDislikedMovies}
+          />
         </div>
 
         <p className="text-xs text-slate-500 mt-2">Supported genres: {suggestedGenreHint}</p>
@@ -177,6 +192,12 @@ const PersonalPreferencePage = () => {
               <p className="text-sm text-slate-300">
                 Cluster #{results.cluster?.cluster_id} | Dominant genres: {results.cluster?.profile?.dominant_genres?.join(", ") || "n/a"}
               </p>
+              {results.search_analysis && (
+                <p className="text-sm text-sky-300 mt-2">Search analysis: {results.search_analysis}</p>
+              )}
+              {results.system_notes && results.system_notes.length > 0 && (
+                <p className="text-sm text-yellow-300 mt-2">Notes: {results.system_notes.join(" | ")}</p>
+              )}
               <p className="text-xs text-slate-400 mt-1">
                 LLM explanations: {results.rate_limited ? "fallback reasoning used" : "active"}
               </p>

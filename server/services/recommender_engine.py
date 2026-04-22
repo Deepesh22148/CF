@@ -47,7 +47,7 @@ GENRE_NAMES = [
 @dataclass
 class RecommenderConfig:
     data_dir: str
-    svd_components: int = 24
+    svd_components: int = 50
     n_clusters: int = 12
     positive_threshold: int = 4
     require_llm: bool = True
@@ -79,6 +79,7 @@ class MovieLensRecommender:
         self.seen_movies_by_user: Dict[int, set] = {}
         self.user_liked_samples: Dict[int, List[str]] = {}
         self.user_genre_weights: Dict[int, Dict[str, float]] = {}
+        self.movie_popularity: Dict[int, float] = {}
 
     def initialize(self) -> None:
         if self.initialized:
@@ -169,6 +170,17 @@ class MovieLensRecommender:
             int(uid): set(group["movie_id"].tolist())
             for uid, group in ratings.groupby("user_id")
         }
+
+        movie_counts = ratings.groupby("movie_id").size().to_dict()
+        if movie_counts:
+            min_c = float(min(movie_counts.values()))
+            max_c = float(max(movie_counts.values()))
+            denom = max(1.0, max_c - min_c)
+            self.movie_popularity = {
+                int(mid): (float(cnt) - min_c) / denom for mid, cnt in movie_counts.items()
+            }
+        else:
+            self.movie_popularity = {}
 
         self._build_user_genre_profiles(ratings)
         self._build_cluster_profiles(ratings)
@@ -427,6 +439,7 @@ class MovieLensRecommender:
                 "title": c["title"],
                 "genres": c["genres"],
                 "base_score": round(float(c["base_score"]), 4),
+                "collab_score": round(float(c.get("collab_score", 50.0)), 2),
             }
             for c in candidates
         ]
@@ -450,14 +463,72 @@ class MovieLensRecommender:
                 ]
             },
             "rules": [
+                "STRICT RULE: Only use genres explicitly provided in each movie item.",
+                "STRICT RULE: If a movie has no overlap with user genres, llm_score must be below 40.",
+                "STRICT RULE: Do not use external knowledge about movies.",
+                "Do not invent reasons. For mismatch use phrase 'Genre mismatch'.",
                 "Be concise and consistent.",
                 "Penalize poor genre match.",
                 "Reward overlap with user genres and cluster tastes.",
                 "Keep reason under 14 words.",
                 "Keep summary under 14 words.",
                 "Return JSON only without markdown.",
+                "Your llm_score must align with your reason sentiment.",
+                "Do not invent user likes/dislikes beyond provided profile fields.",
             ],
         }
+
+    def _clamp_percent(self, value: float) -> float:
+        return float(max(0.0, min(100.0, value)))
+
+    def _apply_reason_score_consistency(self, llm_score: float, reason: str) -> float:
+        txt = reason.lower()
+        negative_markers = [
+            "less likely",
+            "unlikely",
+            "mismatch",
+            "dislike",
+            "not likely",
+            "low probability",
+        ]
+        positive_markers = [
+            "likely",
+            "strong match",
+            "high probability",
+            "good match",
+            "enjoy",
+        ]
+
+        has_negative = any(m in txt for m in negative_markers)
+        has_positive = any(m in txt for m in positive_markers)
+
+        score = self._clamp_percent(llm_score)
+        if has_negative and score > 50:
+            score = min(score, 28.0)
+        if has_positive and score < 50 and not has_negative:
+            score = max(score, 65.0)
+        return score
+
+    def _reason_penalty(self, reason: str) -> float:
+        txt = reason.lower()
+        if any(m in txt for m in ["dislike", "less likely", "not aligned", "mismatch", "unlikely"]):
+            return 18.0
+        return 0.0
+
+    def _assign_collab_scores(self, candidates: List[Dict[str, Any]]) -> None:
+        if not candidates:
+            return
+        base_values = [float(c["base_score"]) for c in candidates]
+        min_v = min(base_values)
+        max_v = max(base_values)
+
+        for c in candidates:
+            base_v = float(c["base_score"])
+            if abs(max_v - min_v) < 1e-9:
+                collab_score = 50.0
+            else:
+                collab_score = 100.0 * (base_v - min_v) / (max_v - min_v)
+            c["collab_score"] = round(self._clamp_percent(collab_score), 2)
 
     def _parse_llm_results(
         self,
@@ -473,13 +544,37 @@ class MovieLensRecommender:
         reranked = []
         for c in candidates:
             llm_info = result_map.get(c["movie_id"], {})
-            llm_score = float(llm_info.get("llm_score", c["base_score"] * 100))
-            final_score = 0.7 * float(c["base_score"] * 100) + 0.3 * llm_score
+            reason = str(llm_info.get("reason", c.get("reason", "Strong collaborative and genre fit.")))
+            llm_score_raw = float(llm_info.get("llm_score", c.get("collab_score", 50.0)))
+            llm_score = self._apply_reason_score_consistency(llm_score_raw, reason)
+
+            # Hard grounding: when there's zero genre overlap, keep both score and reason aligned.
+            if float(c.get("genre_match", 0.0)) <= 0.0:
+                llm_score = min(llm_score, 35.0)
+                if "genre mismatch" not in reason.lower():
+                    reason = "Genre mismatch."
+
+            collab_score = float(c.get("collab_score", 50.0))
+            personalization_score = 100.0 * float(c.get("genre_match", 0.0))
+            popularity_penalty = 20.0 * float(c.get("popularity", 0.0)) * (1.0 - float(c.get("genre_match", 0.0)))
+            reason_penalty = self._reason_penalty(reason)
+
+            # Normalize to 0-1 before blending, then map back to 0-100.
+            collab_norm = collab_score / 100.0
+            llm_norm = llm_score / 100.0
+            pers_norm = personalization_score / 100.0
+            penalty_norm = (popularity_penalty + reason_penalty) / 100.0
+            final_score = (
+                0.40 * collab_norm
+                + 0.40 * pers_norm
+                + 0.20 * llm_norm
+                - penalty_norm
+            ) * 100.0
             reranked.append(
                 {
                     **c,
-                    "score": round(final_score, 2),
-                    "reason": str(llm_info.get("reason", c.get("reason", "Strong collaborative and genre fit."))),
+                    "score": round(self._clamp_percent(final_score), 2),
+                    "reason": reason,
                     "summary": str(llm_info.get("summary", c.get("summary", c["title"]))),
                     "used_llm": True,
                 }
@@ -741,7 +836,7 @@ class MovieLensRecommender:
                 reason = "High collaborative score from users with similar rating behavior."
             c = {
                 **c,
-                "score": round(float(c["base_score"]) * 100, 2),
+                "score": round(float(c.get("collab_score", 50.0)), 2),
                 "reason": reason,
                 "summary": f"{c['title']} is likely to fit your taste profile.",
                 "used_llm": False,
@@ -771,7 +866,14 @@ class MovieLensRecommender:
 
             movie_row = self.items_df[self.items_df["movie_id"] == movie_id].iloc[0]
             genre_bonus = self._genre_overlap_score(movie_row, preferred_genres)
-            base_score = float(raw_scores[idx]) + 0.15 * genre_bonus
+            popularity = float(self.movie_popularity.get(int(movie_id), 0.0))
+
+            # Hard penalty for zero-overlap movies when explicit preferences exist.
+            hard_genre_penalty = 5.0 if preferred_genres and genre_bonus == 0 else 0.0
+
+            # Debias very popular movies when they don't match stated preferences.
+            popularity_bias = 0.10 * popularity * (1.0 - genre_bonus)
+            base_score = float(raw_scores[idx]) + 0.20 * genre_bonus - popularity_bias - hard_genre_penalty
 
             candidates.append(
                 {
@@ -781,11 +883,15 @@ class MovieLensRecommender:
                     "base_score": base_score,
                     "estimated_rating": round(min(5.0, max(1.0, 2.5 + base_score)), 2),
                     "genre_match": round(genre_bonus, 3),
+                    "popularity": round(popularity, 3),
+                    "hard_genre_penalty": hard_genre_penalty,
                 }
             )
 
             if len(candidates) >= max(50, top_k * 3):
                 break
+
+        self._assign_collab_scores(candidates)
 
         cluster_profile = self.cluster_profiles.get(cluster_id, {})
         if use_llm:
@@ -805,10 +911,11 @@ class MovieLensRecommender:
                 "title": c["title"],
                 "genres": c["genres"],
                 "score": round(float(c["score"]), 2),
-                "estimated_rating": c["estimated_rating"],
+                "estimated_rating": round(1.0 + 4.0 * (float(c["score"]) / 100.0), 2),
                 "reason": c["reason"],
                 "summary": c["summary"],
                 "genre_match": c["genre_match"],
+                "collab_score": round(float(c.get("collab_score", 50.0)), 2),
             }
             for c in reranked[:top_k]
         ]
@@ -971,7 +1078,7 @@ def get_recommender() -> MovieLensRecommender:
         _engine = MovieLensRecommender(
             RecommenderConfig(
                 data_dir=base_dir,
-                svd_components=int(os.getenv("SVD_COMPONENTS", "24")),
+                svd_components=int(os.getenv("SVD_COMPONENTS", "50")),
                 n_clusters=int(os.getenv("N_CLUSTERS", "12")),
                 positive_threshold=int(os.getenv("POSITIVE_THRESHOLD", "4")),
                 require_llm=os.getenv("REQUIRE_LLM", "true").lower() == "true",

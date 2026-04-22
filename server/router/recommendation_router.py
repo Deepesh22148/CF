@@ -16,12 +16,13 @@ async def get_recommendation(request : Request):
 
 
 @recommendation_router.get("/evaluate")
-async def get_recommendation_eval(split: str = "u1", ks: str = "5,10,15"):
+async def get_recommendation_eval(split: str = "u1", ks: str = "5,10,15", show_progress: bool = True):
     parsed_ks = [int(x.strip()) for x in ks.split(",") if x.strip()]
     body_as_str = json.dumps({
         "mode": "evaluate",
         "split": split,
         "ks": parsed_ks,
+        "show_progress": show_progress,
     })
     return await recommendation_controllor.get_recommendation(body_as_str)
 

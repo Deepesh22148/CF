@@ -20,6 +20,11 @@ try:
 except ImportError:  # pragma: no cover
     httpx = None
 
+try:
+    from tqdm.auto import tqdm
+except ImportError:  # pragma: no cover
+    tqdm = None
+
 
 GENRE_NAMES = [
     "unknown",
@@ -85,7 +90,7 @@ class MovieLensRecommender:
         self.movie_titles: List[str] = []
         self.movie_id_to_title: Dict[int, str] = {}
 
-    def initialize(self) -> None:
+    def initialize(self, build_classifier: bool = True) -> None:
         if self.initialized:
             return
 
@@ -93,7 +98,7 @@ class MovieLensRecommender:
         self.items_df = self._load_items()
         self.ratings_df = self._load_ratings("u.data")
 
-        self._fit_from_ratings(self.ratings_df)
+        self._fit_from_ratings(self.ratings_df, build_classifier=build_classifier)
         self.initialized = True
 
     def _data_path(self, filename: str) -> str:
@@ -154,7 +159,7 @@ class MovieLensRecommender:
         ratings["rating"] = ratings["rating"].astype(float)
         return ratings
 
-    def _fit_from_ratings(self, ratings: pd.DataFrame) -> None:
+    def _fit_from_ratings(self, ratings: pd.DataFrame, build_classifier: bool = True) -> None:
         user_ids = sorted(ratings["user_id"].unique().tolist())
         movie_ids = sorted(self.items_df["movie_id"].unique().tolist())
 
@@ -201,7 +206,11 @@ class MovieLensRecommender:
 
         self._build_user_genre_profiles(ratings)
         self._build_cluster_profiles(ratings)
-        self._fit_cluster_classifier()
+        if build_classifier:
+            self._fit_cluster_classifier()
+        else:
+            self.vectorizer = None
+            self.classifier = None
 
     def _build_user_genre_profiles(self, ratings: pd.DataFrame) -> None:
         self.user_genre_weights = {}
@@ -351,7 +360,7 @@ class MovieLensRecommender:
 
         self.vectorizer = DictVectorizer(sparse=False)
         x = self.vectorizer.fit_transform(rows)
-        self.classifier = LogisticRegression(max_iter=1000, multi_class="auto")
+        self.classifier = LogisticRegression(max_iter=5000, multi_class="auto")
         self.classifier.fit(x, labels)
 
     def _predict_cluster_for_profile(
@@ -736,6 +745,7 @@ class MovieLensRecommender:
     def _call_openai_llm(self, prompt: Dict[str, Any]) -> str:
         api_key = os.getenv("OPENAI_API_KEY")
         model = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
+        timeout_seconds = float(os.getenv("OPENAI_TIMEOUT_SECONDS", "60"))
         if not api_key:
             raise RuntimeError("OPENAI_API_KEY not set")
 
@@ -757,7 +767,7 @@ class MovieLensRecommender:
                 "temperature": 0.2,
                 "response_format": {"type": "json_object"},
             },
-            timeout=30.0,
+            timeout=timeout_seconds,
         )
         response.raise_for_status()
         data = response.json()
@@ -1287,8 +1297,15 @@ class MovieLensRecommender:
         split_name: str = "u1",
         ks: Sequence[int] = (5, 10, 15),
         use_llm: bool = True,
+        show_progress: bool = True,
+        rank_top_n: int = 300,
+        max_users: Optional[int] = None,
     ) -> Dict[str, Any]:
-        self.initialize()
+        original_require_llm = self.config.require_llm
+        if not use_llm:
+            self.config.require_llm = False
+
+        self.initialize(build_classifier=False)
 
         base_file = f"{split_name}.base"
         test_file = f"{split_name}.test"
@@ -1298,7 +1315,7 @@ class MovieLensRecommender:
         temp = MovieLensRecommender(self.config)
         temp.users_df = self.users_df.copy()
         temp.items_df = self.items_df.copy()
-        temp._fit_from_ratings(base_ratings)
+        temp._fit_from_ratings(base_ratings, build_classifier=False)
         temp.initialized = True
 
         positives = test_ratings[test_ratings["rating"] >= self.config.positive_threshold]
@@ -1315,29 +1332,90 @@ class MovieLensRecommender:
 
         all_movie_ids = set(temp.items_df["movie_id"].astype(int).tolist())
         rng = np.random.default_rng(42)
+        candidate_users = sorted(
+            [
+                uid
+                for uid, pos in positives_by_user.items()
+                if uid in temp.user_id_to_idx and bool(pos)
+            ]
+        )
+        if max_users is not None and max_users > 0:
+            candidate_users = candidate_users[: int(max_users)]
+
+        total_users = len(candidate_users)
+        progress_enabled = bool(show_progress)
+
+        rank_limit = max(50, int(rank_top_n), int(max(ks)))
+        user_eval_cache: Dict[int, Dict[str, Any]] = {}
+        llm_fallback_users_total = 0
+
+        rank_iterator = candidate_users
+        rank_progress_bar = None
+        if progress_enabled and tqdm is not None:
+            rank_progress_bar = tqdm(
+                rank_iterator,
+                total=total_users,
+                desc="Ranking users",
+                leave=False,
+            )
+            rank_iterator = rank_progress_bar
+
+        for i, user_id in enumerate(rank_iterator, start=1):
+            positive_movies = positives_by_user[user_id]
+
+            try:
+                payload = temp.recommend_existing_user(user_id, top_k=rank_limit, use_llm=use_llm)
+            except RuntimeError as exc:
+                # Evaluation should continue even when external LLM providers time out.
+                if not use_llm:
+                    raise
+                if "LLM scoring failed" not in str(exc):
+                    raise
+
+                llm_fallback_users_total += 1
+                original_temp_require_llm = temp.config.require_llm
+                temp.config.require_llm = False
+                try:
+                    payload = temp.recommend_existing_user(user_id, top_k=rank_limit, use_llm=False)
+                finally:
+                    temp.config.require_llm = original_temp_require_llm
+
+            ranked_all = [r["movie_id"] for r in payload["recommendations"]]
+
+            user_seen = set(temp.seen_movies_by_user.get(user_id, set()))
+            hard_negs = list(hard_negatives_by_user.get(user_id, set()) - positive_movies)
+            if len(hard_negs) > 10:
+                hard_negs = hard_negs[:10]
+
+            unrated_candidates = list(all_movie_ids - user_seen - positive_movies - set(hard_negs))
+            random_neg_count = min(90, len(unrated_candidates))
+            sampled_random = (
+                rng.choice(unrated_candidates, size=random_neg_count, replace=False).tolist()
+                if random_neg_count > 0
+                else []
+            )
+
+            eval_pool = set(positive_movies) | set(hard_negs) | set(sampled_random)
+            user_eval_cache[user_id] = {
+                "positive_movies": positive_movies,
+                "eval_pool": eval_pool,
+                "ranked_all": ranked_all,
+            }
+
+            if progress_enabled and tqdm is None and i % 50 == 0:
+                print(f"Ranking users: processed {i}/{total_users}")
+
+        if rank_progress_bar is not None:
+            rank_progress_bar.close()
 
         results = []
         for k in ks:
             hr_scores = []
             ndcg_scores = []
-
-            for user_id, positive_movies in positives_by_user.items():
-                if user_id not in temp.user_id_to_idx or not positive_movies:
-                    continue
-
-                payload = temp.recommend_existing_user(user_id, top_k=300, use_llm=use_llm)
-                ranked_all = [r["movie_id"] for r in payload["recommendations"]]
-
-                user_seen = set(temp.seen_movies_by_user.get(user_id, set()))
-                hard_negs = list(hard_negatives_by_user.get(user_id, set()) - positive_movies)
-                if len(hard_negs) > 10:
-                    hard_negs = hard_negs[:10]
-
-                unrated_candidates = list(all_movie_ids - user_seen - positive_movies - set(hard_negs))
-                random_neg_count = min(90, len(unrated_candidates))
-                sampled_random = rng.choice(unrated_candidates, size=random_neg_count, replace=False).tolist() if random_neg_count > 0 else []
-
-                eval_pool = set(positive_movies) | set(hard_negs) | set(sampled_random)
+            for cache in user_eval_cache.values():
+                positive_movies = cache["positive_movies"]
+                eval_pool = cache["eval_pool"]
+                ranked_all = cache["ranked_all"]
                 rec_ids = [mid for mid in ranked_all if mid in eval_pool][: int(k)]
 
                 if len(rec_ids) < int(k):
@@ -1362,16 +1440,23 @@ class MovieLensRecommender:
                     "hit_rate": round(float(np.mean(hr_scores)) if hr_scores else 0.0, 4),
                     "ndcg": round(float(np.mean(ndcg_scores)) if ndcg_scores else 0.0, 4),
                     "evaluated_users": len(hr_scores),
+                    "llm_fallback_users": llm_fallback_users_total,
                 }
             )
 
-        return {
+        result = {
             "split": split_name,
             "positive_threshold": self.config.positive_threshold,
             "llm_used": use_llm,
+            "progress_enabled": progress_enabled,
+            "rank_top_n": rank_limit,
+            "max_users": max_users,
             "hard_negatives_per_user": 10,
             "metrics": results,
         }
+
+        self.config.require_llm = original_require_llm
+        return result
 
 
 _engine: Optional[MovieLensRecommender] = None

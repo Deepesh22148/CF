@@ -177,3 +177,25 @@ This writes a table-ready JSON file containing:
 - `evaluated_users`
 
 You can include these rows in your PDF tables and add your YouTube demo link, as required.
+
+### Fast LLM Evaluation (100-150 Users)
+
+Use these commands when you want LLM-based metrics quickly before a full run.
+
+From the `server` directory:
+
+```bash
+# Quick sample (about 100 users per split)
+python evaluate.py --splits u1,u2,u3,u4,u5 --ks 5,10,15 --max-users 100 --rank-top-n 80 --out evaluation_results_llm_100.json --no-progress
+
+# Slightly larger sample (about 150 users per split)
+python evaluate.py --splits u1,u2,u3,u4,u5 --ks 5,10,15 --max-users 150 --rank-top-n 80 --out evaluation_results_llm_150.json --no-progress
+```
+
+Why this is faster:
+- `--max-users` limits users per split.
+- `--rank-top-n 80` reduces rerank depth while still covering K up to 15.
+- `--no-progress` avoids tqdm/log overhead.
+
+Then compare with the non-LLM baseline file:
+- `evaluation_results_no_llm_full.json`

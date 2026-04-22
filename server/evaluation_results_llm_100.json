@@ -1,0 +1,130 @@
+{
+  "positive_threshold": 4,
+  "llm_requested": true,
+  "llm_used": true,
+  "progress_enabled": true,
+  "rank_top_n": 20,
+  "max_users": 10,
+  "rows": [
+    {
+      "split": "u1",
+      "k": 5,
+      "hit_rate": 1.0,
+      "ndcg": 0.883,
+      "evaluated_users": 10,
+      "llm_fallback_users": 0
+    },
+    {
+      "split": "u1",
+      "k": 10,
+      "hit_rate": 1.0,
+      "ndcg": 0.8602,
+      "evaluated_users": 10,
+      "llm_fallback_users": 0
+    },
+    {
+      "split": "u1",
+      "k": 15,
+      "hit_rate": 1.0,
+      "ndcg": 0.8435,
+      "evaluated_users": 10,
+      "llm_fallback_users": 0
+    },
+    {
+      "split": "u2",
+      "k": 5,
+      "hit_rate": 1.0,
+      "ndcg": 0.8015,
+      "evaluated_users": 10,
+      "llm_fallback_users": 0
+    },
+    {
+      "split": "u2",
+      "k": 10,
+      "hit_rate": 1.0,
+      "ndcg": 0.7865,
+      "evaluated_users": 10,
+      "llm_fallback_users": 0
+    },
+    {
+      "split": "u2",
+      "k": 15,
+      "hit_rate": 1.0,
+      "ndcg": 0.7851,
+      "evaluated_users": 10,
+      "llm_fallback_users": 0
+    },
+    {
+      "split": "u3",
+      "k": 5,
+      "hit_rate": 0.9,
+      "ndcg": 0.6999,
+      "evaluated_users": 10,
+      "llm_fallback_users": 0
+    },
+    {
+      "split": "u3",
+      "k": 10,
+      "hit_rate": 0.9,
+      "ndcg": 0.7072,
+      "evaluated_users": 10,
+      "llm_fallback_users": 0
+    },
+    {
+      "split": "u3",
+      "k": 15,
+      "hit_rate": 0.9,
+      "ndcg": 0.6815,
+      "evaluated_users": 10,
+      "llm_fallback_users": 0
+    },
+    {
+      "split": "u4",
+      "k": 5,
+      "hit_rate": 0.8,
+      "ndcg": 0.6392,
+      "evaluated_users": 10,
+      "llm_fallback_users": 0
+    },
+    {
+      "split": "u4",
+      "k": 10,
+      "hit_rate": 0.8,
+      "ndcg": 0.6497,
+      "evaluated_users": 10,
+      "llm_fallback_users": 0
+    },
+    {
+      "split": "u4",
+      "k": 15,
+      "hit_rate": 0.8,
+      "ndcg": 0.6237,
+      "evaluated_users": 10,
+      "llm_fallback_users": 0
+    },
+    {
+      "split": "u5",
+      "k": 5,
+      "hit_rate": 0.9,
+      "ndcg": 0.4722,
+      "evaluated_users": 10,
+      "llm_fallback_users": 0
+    },
+    {
+      "split": "u5",
+      "k": 10,
+      "hit_rate": 1.0,
+      "ndcg": 0.5094,
+      "evaluated_users": 10,
+      "llm_fallback_users": 0
+    },
+    {
+      "split": "u5",
+      "k": 15,
+      "hit_rate": 1.0,
+      "ndcg": 0.4874,
+      "evaluated_users": 10,
+      "llm_fallback_users": 0
+    }
+  ]
+}

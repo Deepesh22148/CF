@@ -5,3 +5,4 @@ scikit-learn
 scipy
 httpx
 python-dotenv
+tqdm

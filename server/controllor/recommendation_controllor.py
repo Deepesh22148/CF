@@ -78,13 +78,19 @@ async def get_evaluation_metrics(recommender, payload):
     split = str(payload.get("split", "u1"))
     ks = payload.get("ks", [5, 10, 15])
     use_llm = bool(payload.get("use_llm", True))
+    show_progress = bool(payload.get("show_progress", True))
 
     if not isinstance(ks, list) or not ks:
         raise HTTPException(status_code=400, detail="ks must be a non-empty list")
 
     ks = [int(k) for k in ks]
     try:
-        return recommender.evaluate_binary_metrics(split_name=split, ks=ks, use_llm=use_llm)
+        return recommender.evaluate_binary_metrics(
+            split_name=split,
+            ks=ks,
+            use_llm=use_llm,
+            show_progress=show_progress,
+        )
     except RuntimeError as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
 

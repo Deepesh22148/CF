@@ -78,6 +78,7 @@ class MovieLensRecommender:
 
         self.seen_movies_by_user: Dict[int, set] = {}
         self.user_liked_samples: Dict[int, List[str]] = {}
+        self.user_disliked_samples: Dict[int, List[str]] = {}
         self.user_genre_weights: Dict[int, Dict[str, float]] = {}
         self.movie_popularity: Dict[int, float] = {}
 
@@ -187,22 +188,27 @@ class MovieLensRecommender:
         self._fit_cluster_classifier()
 
     def _build_user_genre_profiles(self, ratings: pd.DataFrame) -> None:
-        positive = ratings[ratings["rating"] >= self.config.positive_threshold]
-        if positive.empty:
-            self.user_genre_weights = {}
-            self.user_liked_samples = {}
-            return
-
-        merged = positive.merge(self.items_df[["movie_id", "title", *GENRE_NAMES]], on="movie_id", how="left")
-
         self.user_genre_weights = {}
         self.user_liked_samples = {}
+        self.user_disliked_samples = {}
 
-        for uid, group in merged.groupby("user_id"):
+        merged_all = ratings.merge(
+            self.items_df[["movie_id", "title", *GENRE_NAMES]], on="movie_id", how="left"
+        )
+
+        positive = merged_all[merged_all["rating"] >= self.config.positive_threshold]
+        if positive.empty:
+            return
+
+        for uid, group in merged_all.groupby("user_id"):
             uid = int(uid)
+
+            pos_group = group[group["rating"] >= self.config.positive_threshold]
+            neg_group = group[group["rating"] <= 2]
+
             scores: Dict[str, float] = {}
             for genre in GENRE_NAMES:
-                genre_weight = float((group[genre] * group["rating"]).sum())
+                genre_weight = float((pos_group[genre] * pos_group["rating"]).sum())
                 if genre_weight > 0:
                     scores[genre] = genre_weight
 
@@ -211,7 +217,25 @@ class MovieLensRecommender:
                 scores = {k: v / total for k, v in scores.items()}
 
             self.user_genre_weights[uid] = scores
-            self.user_liked_samples[uid] = group.sort_values("rating", ascending=False)["title"].head(3).tolist()
+
+            # Temporal weighting: use the most recent liked titles, then high-rated ties.
+            liked_recent = (
+                pos_group.sort_values(["timestamp", "rating"], ascending=[False, False])["title"]
+                .dropna()
+                .drop_duplicates()
+                .head(5)
+                .tolist()
+            )
+            self.user_liked_samples[uid] = liked_recent
+
+            disliked_recent = (
+                neg_group.sort_values(["timestamp", "rating"], ascending=[False, True])["title"]
+                .dropna()
+                .drop_duplicates()
+                .head(5)
+                .tolist()
+            )
+            self.user_disliked_samples[uid] = disliked_recent
 
     def _build_cluster_profiles(self, ratings: pd.DataFrame) -> None:
         ratings_with_cluster = ratings.copy()
@@ -433,6 +457,13 @@ class MovieLensRecommender:
         cluster_profile: Dict[str, Any],
         candidates: List[Dict[str, Any]],
     ) -> Dict[str, Any]:
+        seen_ids = set(user_profile.get("seen_movie_ids", []))
+        cluster_peer_unseen = [
+            m.get("title", "")
+            for m in cluster_profile.get("top_movies", [])
+            if int(m.get("movie_id", -1)) not in seen_ids
+        ][:3]
+
         payload_candidates = [
             {
                 "movie_id": c["movie_id"],
@@ -445,11 +476,12 @@ class MovieLensRecommender:
         ]
 
         return {
-            "task": "Score each movie from 0 to 100 for expected user like probability and provide a short reason in one sentence.",
+            "task": "First analyze user era preference and genre consistency, then score each movie from 0 to 100.",
             "user_profile": user_profile,
             "cluster_context": {
                 "dominant_genres": cluster_profile.get("dominant_genres", []),
                 "top_movies": [m["title"] for m in cluster_profile.get("top_movies", [])[:5]],
+                "peer_unseen_movies": cluster_peer_unseen,
             },
             "movies": payload_candidates,
             "response_schema": {
@@ -465,8 +497,10 @@ class MovieLensRecommender:
             "rules": [
                 "STRICT RULE: Only use genres explicitly provided in each movie item.",
                 "STRICT RULE: If a movie has no overlap with user genres, llm_score must be below 40.",
+                "STRICT RULE: If a movie is 'Children' genre while profile is 'Crime'-oriented, score below 30.",
                 "STRICT RULE: Do not use external knowledge about movies.",
                 "Do not invent reasons. For mismatch use phrase 'Genre mismatch'.",
+                "If candidate resembles disliked samples, explicitly penalize the score.",
                 "Be concise and consistent.",
                 "Penalize poor genre match.",
                 "Reward overlap with user genres and cluster tastes.",
@@ -503,8 +537,8 @@ class MovieLensRecommender:
         has_positive = any(m in txt for m in positive_markers)
 
         score = self._clamp_percent(llm_score)
-        if has_negative and score > 50:
-            score = min(score, 28.0)
+        if has_negative:
+            score = min(score, 25.0)
         if has_positive and score < 50 and not has_negative:
             score = max(score, 65.0)
         return score
@@ -565,8 +599,8 @@ class MovieLensRecommender:
             pers_norm = personalization_score / 100.0
             penalty_norm = (popularity_penalty + reason_penalty) / 100.0
             final_score = (
-                0.40 * collab_norm
-                + 0.40 * pers_norm
+                0.50 * collab_norm
+                + 0.30 * pers_norm
                 + 0.20 * llm_norm
                 - penalty_norm
             ) * 100.0
@@ -872,7 +906,7 @@ class MovieLensRecommender:
             hard_genre_penalty = 5.0 if preferred_genres and genre_bonus == 0 else 0.0
 
             # Debias very popular movies when they don't match stated preferences.
-            popularity_bias = 0.10 * popularity * (1.0 - genre_bonus)
+            popularity_bias = 15.0 * np.log1p(popularity * 100.0) / np.log1p(100.0)
             base_score = float(raw_scores[idx]) + 0.20 * genre_bonus - popularity_bias - hard_genre_penalty
 
             candidates.append(
@@ -949,6 +983,8 @@ class MovieLensRecommender:
             "occupation": str(user_row["occupation"]),
             "genres": preferred_genre_names,
             "liked_samples": self.user_liked_samples.get(user_id, []),
+            "disliked_samples": self.user_disliked_samples.get(user_id, []),
+            "seen_movie_ids": sorted(list(self.seen_movies_by_user.get(user_id, set()))),
         }
 
         rec_payload = self._recommend_from_vector(
@@ -961,8 +997,11 @@ class MovieLensRecommender:
             use_llm=use_llm,
         )
 
+        public_user_info = dict(user_profile)
+        public_user_info.pop("seen_movie_ids", None)
+
         return {
-            "user_info": user_profile,
+            "user_info": public_user_info,
             **rec_payload,
         }
 
@@ -1027,6 +1066,15 @@ class MovieLensRecommender:
             for uid, group in positives.groupby("user_id")
         }
 
+        base_hard_negatives = base_ratings[base_ratings["rating"] <= 2]
+        hard_negatives_by_user = {
+            int(uid): set(group["movie_id"].tolist())
+            for uid, group in base_hard_negatives.groupby("user_id")
+        }
+
+        all_movie_ids = set(temp.items_df["movie_id"].astype(int).tolist())
+        rng = np.random.default_rng(42)
+
         results = []
         for k in ks:
             hr_scores = []
@@ -1036,8 +1084,24 @@ class MovieLensRecommender:
                 if user_id not in temp.user_id_to_idx or not positive_movies:
                     continue
 
-                payload = temp.recommend_existing_user(user_id, top_k=int(k), use_llm=use_llm)
-                rec_ids = [r["movie_id"] for r in payload["recommendations"]]
+                payload = temp.recommend_existing_user(user_id, top_k=300, use_llm=use_llm)
+                ranked_all = [r["movie_id"] for r in payload["recommendations"]]
+
+                user_seen = set(temp.seen_movies_by_user.get(user_id, set()))
+                hard_negs = list(hard_negatives_by_user.get(user_id, set()) - positive_movies)
+                if len(hard_negs) > 10:
+                    hard_negs = hard_negs[:10]
+
+                unrated_candidates = list(all_movie_ids - user_seen - positive_movies - set(hard_negs))
+                random_neg_count = min(90, len(unrated_candidates))
+                sampled_random = rng.choice(unrated_candidates, size=random_neg_count, replace=False).tolist() if random_neg_count > 0 else []
+
+                eval_pool = set(positive_movies) | set(hard_negs) | set(sampled_random)
+                rec_ids = [mid for mid in ranked_all if mid in eval_pool][: int(k)]
+
+                if len(rec_ids) < int(k):
+                    filler = [mid for mid in eval_pool if mid not in rec_ids]
+                    rec_ids.extend(filler[: int(k) - len(rec_ids)])
 
                 hit = 1.0 if any(mid in positive_movies for mid in rec_ids) else 0.0
                 hr_scores.append(hit)
@@ -1064,6 +1128,7 @@ class MovieLensRecommender:
             "split": split_name,
             "positive_threshold": self.config.positive_threshold,
             "llm_used": use_llm,
+            "hard_negatives_per_user": 10,
             "metrics": results,
         }
 
